@@ -51,6 +51,14 @@ jobs:
       # Three passes because Cache-Control is set per upload, not per file, and
       # html and hashed assets want opposite answers. rclone applies the filters
       # to both sides, so each pass only deletes within its own class.
+      #
+      # --ignore-times is load-bearing. Without it rclone sees identical content
+      # with a newer mtime and "updates the modification time in destination",
+      # which on S3 is a CopyObject that rewrites the metadata - and that path
+      # does not apply --header-upload, so it silently strips Cache-Control off
+      # every object it touches. Re-uploading unconditionally keeps the headers
+      # below the single source of truth. These sites are a few hundred KB and
+      # ingress to Hetzner is free.
       - name: deploy
         env:
           RCLONE_CONFIG_TG_TYPE: s3
@@ -62,10 +70,10 @@ jobs:
           RCLONE_S3_NO_CHECK_BUCKET: "true"
         run: |
           set -eu
-          rclone sync dist "$DEST" --include "*.html" \
+          rclone sync dist "$DEST" --ignore-times --include "*.html" \
             --header-upload "Cache-Control: public, max-age=60" -v
-          rclone sync dist "$DEST" --include "assets/**" \
+          rclone sync dist "$DEST" --ignore-times --include "assets/**" \
             --header-upload "Cache-Control: public, max-age=31536000, immutable" -v
-          rclone sync dist "$DEST" --exclude "*.html" --exclude "assets/**" \
+          rclone sync dist "$DEST" --ignore-times --exclude "*.html" --exclude "assets/**" \
             --header-upload "Cache-Control: public, max-age=3600" -v
           echo "deployed; the gateway caches for 1m, so give it a minute"

@@ -17,7 +17,9 @@ permissions:
   contents: read
 
 env:
-  RCLONE_VERSION: v1.75.0
+  # Not RCLONE_VERSION: rclone maps every RCLONE_* variable onto a flag, and
+  # RCLONE_VERSION lands on --version, which wants a bool and aborts.
+  DEPLOY_RCLONE_VERSION: v1.75.0
   DEST: TG:typeguru/sites/experience-calc
 
 jobs:
@@ -42,9 +44,9 @@ jobs:
       - name: install rclone
         run: |
           curl -fsSL -o rclone.zip \
-            "https://downloads.rclone.org/${RCLONE_VERSION}/rclone-${RCLONE_VERSION}-linux-amd64.zip"
+            "https://downloads.rclone.org/${DEPLOY_RCLONE_VERSION}/rclone-${DEPLOY_RCLONE_VERSION}-linux-amd64.zip"
           unzip -q rclone.zip
-          sudo install -m755 "rclone-${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+          sudo install -m755 "rclone-${DEPLOY_RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
 
       # Three passes because Cache-Control is set per upload, not per file, and
       # html and hashed assets want opposite answers. rclone applies the filters

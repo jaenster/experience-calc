@@ -1,27 +1,69 @@
+# Builds the site and syncs it into the Hetzner bucket that experience.typeguru.nl is
+# served from. There is no image any more: the cluster runs nginx-s3-gateway
+# against typeguru/sites/experience-calc, so a deploy is the contents of dist/ landing
+# in that prefix. ArgoCD is not involved and there is no tag to bump.
 name: build
 on:
   push:
     branches: [main]
 
+# Two pushes in quick succession would otherwise race each other into the same
+# prefix, and the loser would be whichever finished last rather than newest.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
-  packages: write
+
+env:
+  RCLONE_VERSION: v1.75.0
+  DEST: TG:typeguru/sites/experience-calc
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+
+      - uses: actions/setup-node@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ghcr.io/jaenster/${{ github.event.repository.name }}:latest
-            ghcr.io/jaenster/${{ github.event.repository.name }}:${{ github.sha }}
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      # `rclone sync` deletes whatever is not in the source. A build that fails
+      # to produce anything but still exits 0 would take the live site with it.
+      - name: sanity check the build
+        run: test -s dist/index.html || { echo "dist/index.html missing or empty"; exit 1; }
+
+      - name: install rclone
+        run: |
+          curl -fsSL -o rclone.zip \
+            "https://downloads.rclone.org/${RCLONE_VERSION}/rclone-${RCLONE_VERSION}-linux-amd64.zip"
+          unzip -q rclone.zip
+          sudo install -m755 "rclone-${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+
+      # Three passes because Cache-Control is set per upload, not per file, and
+      # html and hashed assets want opposite answers. rclone applies the filters
+      # to both sides, so each pass only deletes within its own class.
+      - name: deploy
+        env:
+          RCLONE_CONFIG_TG_TYPE: s3
+          RCLONE_CONFIG_TG_PROVIDER: Other
+          RCLONE_CONFIG_TG_ENDPOINT: https://fsn1.your-objectstorage.com
+          RCLONE_CONFIG_TG_REGION: fsn1
+          RCLONE_CONFIG_TG_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_TG_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_ACCESS_KEY }}
+          RCLONE_S3_NO_CHECK_BUCKET: "true"
+        run: |
+          set -eu
+          rclone sync dist "$DEST" --include "*.html" \
+            --header-upload "Cache-Control: public, max-age=60" -v
+          rclone sync dist "$DEST" --include "assets/**" \
+            --header-upload "Cache-Control: public, max-age=31536000, immutable" -v
+          rclone sync dist "$DEST" --exclude "*.html" --exclude "assets/**" \
+            --header-upload "Cache-Control: public, max-age=3600" -v
+          echo "deployed; the gateway caches for 1m, so give it a minute"
